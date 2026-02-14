@@ -2,21 +2,35 @@ package main
 
 import (
 	"crypto/md5"
-	"file-transfer/messages"
-	"file-transfer/util"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"syscall"
+
+	"file-transfer/messages"
+	"file-transfer/util"
 )
 
 func handleStorage(msgHandler *messages.MessageHandler, request *messages.StorageRequest) {
 	log.Println("Attempting to store", request.FileName)
-	file, err := os.OpenFile(request.FileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+
+	// Check available disk space
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(".", &stat); err != nil {
+		msgHandler.SendResponse(false, "Could not check disk space: "+err.Error())
+		return
+	}
+	availableBytes := stat.Bavail * uint64(stat.Bsize)
+	if request.Size > availableBytes {
+		msgHandler.SendResponse(false, fmt.Sprintf("Not enough disk space. Need %d bytes, have %d bytes", request.Size, availableBytes))
+		return
+	}
+
+	file, err := os.OpenFile(request.FileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
 	if err != nil {
 		msgHandler.SendResponse(false, err.Error())
-		msgHandler.Close()
 		return
 	}
 
@@ -33,8 +47,11 @@ func handleStorage(msgHandler *messages.MessageHandler, request *messages.Storag
 
 	if util.VerifyChecksum(serverCheck, clientCheck) {
 		log.Println("Successfully stored file.")
+		msgHandler.SendResponse(true, "File stored successfully")
 	} else {
 		log.Println("FAILED to store file. Invalid checksum.")
+		os.Remove(request.FileName)
+		msgHandler.SendResponse(false, "Checksum mismatch, file rejected")
 	}
 }
 
@@ -44,7 +61,9 @@ func handleRetrieval(msgHandler *messages.MessageHandler, request *messages.Retr
 	// Get file size and make sure it exists
 	info, err := os.Stat(request.FileName)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println("File not found:", request.FileName)
+		msgHandler.SendRetrievalResponse(false, "File not found: "+request.FileName, 0)
+		return
 	}
 
 	msgHandler.SendRetrievalResponse(true, "Ready to send", uint64(info.Size()))
@@ -101,6 +120,9 @@ func main() {
 	dir := "."
 	if len(os.Args) >= 3 {
 		dir = os.Args[2]
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Fatalln("Failed to create storage directory:", err)
 	}
 	if err := os.Chdir(dir); err != nil {
 		log.Fatalln(err)
