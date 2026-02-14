@@ -2,16 +2,14 @@ package main
 
 import (
 	"crypto/md5"
+	"file-transfer/messages"
+	"file-transfer/util"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
-
-	"file-transfer/messages"
-	"file-transfer/util"
 )
 
 func put(msgHandler *messages.MessageHandler, fileName string) int {
@@ -23,9 +21,8 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 		log.Fatalln(err)
 	}
 
-	// Tell the server we want to store this file (base name only, no directories)
-	baseName := filepath.Base(fileName)
-	msgHandler.SendStorageRequest(baseName, uint64(info.Size()))
+	// Tell the server we want to store this file
+	msgHandler.SendStorageRequest(fileName, uint64(info.Size()))
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
 	}
@@ -46,11 +43,10 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 	return 0
 }
 
-func get(msgHandler *messages.MessageHandler, fileName string, destDir string) int {
+func get(msgHandler *messages.MessageHandler, fileName string) int {
 	fmt.Println("GET", fileName)
 
-	outputPath := filepath.Join(destDir, fileName)
-	file, err := os.OpenFile(outputPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
+	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 	if err != nil {
 		log.Println(err)
 		return 1
@@ -115,6 +111,6 @@ func main() {
 	if action == "put" {
 		os.Exit(put(msgHandler, fileName))
 	} else if action == "get" {
-		os.Exit(get(msgHandler, fileName, dir))
+		os.Exit(get(msgHandler, fileName))
 	}
 }
