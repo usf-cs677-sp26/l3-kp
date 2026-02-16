@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -21,8 +22,9 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 		log.Fatalln(err)
 	}
 
-	// Tell the server we want to store this file
-	msgHandler.SendStorageRequest(fileName, uint64(info.Size()))
+	// Send only the base filename to the server (no directories)
+	baseName := filepath.Base(fileName)
+	msgHandler.SendStorageRequest(baseName, uint64(info.Size()))
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
 	}
@@ -43,25 +45,28 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 	return 0
 }
 
-func get(msgHandler *messages.MessageHandler, fileName string) int {
+func get(msgHandler *messages.MessageHandler, fileName string, destDir string) int {
 	fmt.Println("GET", fileName)
 
-	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+	// Create the file in the destination directory
+	destPath := filepath.Join(destDir, fileName)
+	file, err := os.OpenFile(destPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 	if err != nil {
 		log.Println(err)
 		return 1
 	}
+	defer file.Close()
 
 	msgHandler.SendRetrievalRequest(fileName)
 	ok, _, size := msgHandler.ReceiveRetrievalResponse()
 	if !ok {
+		os.Remove(destPath) // Clean up the empty file
 		return 1
 	}
 
 	md5 := md5.New()
 	w := io.MultiWriter(file, md5)
 	io.CopyN(w, msgHandler, int64(size))
-	file.Close()
 
 	clientCheck := md5.Sum(nil)
 	checkMsg, _ := msgHandler.Receive()
@@ -71,6 +76,8 @@ func get(msgHandler *messages.MessageHandler, fileName string) int {
 		log.Println("Successfully retrieved file.")
 	} else {
 		log.Println("FAILED to retrieve file. Invalid checksum.")
+		os.Remove(destPath) // Delete the corrupted file
+		return 1
 	}
 
 	return 0
@@ -102,15 +109,21 @@ func main() {
 	if len(os.Args) >= 5 {
 		dir = os.Args[4]
 	}
-	openDir, err := os.Open(dir)
-	if err != nil {
-		log.Fatalln(err)
+
+	// Verify destination directory exists
+	if action == "get" {
+		info, err := os.Stat(dir)
+		if err != nil {
+			log.Fatalln("Destination directory does not exist:", err)
+		}
+		if !info.IsDir() {
+			log.Fatalln("Destination path is not a directory")
+		}
 	}
-	openDir.Close()
 
 	if action == "put" {
 		os.Exit(put(msgHandler, fileName))
 	} else if action == "get" {
-		os.Exit(get(msgHandler, fileName))
+		os.Exit(get(msgHandler, fileName, dir))
 	}
 }
